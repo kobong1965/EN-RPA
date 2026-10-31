@@ -48,4 +48,5 @@ oculix-flow/ocr/.venv/
 oculix-flow/ocr/.uv-cache/
 执行数据/
 runtime/
+OculiX/oculixide-4.0.0-windows.jar
 *.lnk
