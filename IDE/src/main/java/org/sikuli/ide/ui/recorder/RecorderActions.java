@@ -1,0 +1,433 @@
+/*
+ * Copyright (c) 2010-2026, sikuli.org, sikulix.com, oculix-org - MIT license
+ */
+package org.sikuli.ide.ui.recorder;
+
+import org.sikuli.script.*;
+import org.sikuli.support.recorder.PatternValidator;
+
+import javax.swing.*;
+import java.io.File;
+
+import static org.sikuli.support.ide.SikuliIDEI18N._I;
+/**
+ * @author Julien Mer (julienmerconsulting)
+ * @author Claude (Anthropic)
+ * @since 3.0.3
+ */
+
+class RecorderActions {
+
+  private final RecorderAssistant assistant;
+  private final RecorderWorkflow workflow;
+  private final RecorderCodeGen codeGen;
+  private final RecorderAppScope appScope;
+  private final RecorderImagePicker imagePicker;
+  private final RecorderCodePreview codePreview;
+  private final File screenshotDir;
+  private final java.util.List<String> capturedImages;
+
+  RecorderActions(RecorderAssistant assistant, RecorderWorkflow workflow, RecorderCodeGen codeGen,
+                  RecorderAppScope appScope, RecorderImagePicker imagePicker,
+                  RecorderCodePreview codePreview, File screenshotDir, java.util.List<String> capturedImages) {
+    this.assistant = assistant;
+    this.workflow = workflow;
+    this.codeGen = codeGen;
+    this.appScope = appScope;
+    this.imagePicker = imagePicker;
+    this.codePreview = codePreview;
+    this.screenshotDir = screenshotDir;
+    this.capturedImages = capturedImages;
+  }
+
+  void handleImageCapture(String actionType) {
+    if (!workflow.startCapture(actionType)) return;
+    if (appScope.warnIfNoApp(assistant)) { workflow.reset(); return; }
+
+    java.util.List<String> options = new java.util.ArrayList<>();
+    options.add(_I("recorderImageSrcCapture"));
+    options.add(_I("recorderImageSrcBrowse"));
+    if (!capturedImages.isEmpty()) {
+      options.add(_I("recorderImageSrcExisting"));
+    }
+
+    // Own the source-select dialog instead of JOptionPane.showOptionDialog: the helper
+    // leaves an internal window we cannot reference, so it lingers and ghosts into the
+    // capture overlay (#387). Holding the JDialog lets us dispose() it for real.
+    JOptionPane optionPane = new JOptionPane(
+        _I("recorderImageSrcDlgTitle", actionLabel(actionType)),
+        JOptionPane.QUESTION_MESSAGE, JOptionPane.DEFAULT_OPTION,
+        null, options.toArray(), options.get(0));
+    javax.swing.JDialog sourceDialog = optionPane.createDialog(assistant, actionLabel(actionType));
+    sourceDialog.setVisible(true); // modal: blocks until the user picks
+    sourceDialog.dispose();        // tear the popup window down NOW
+    Object value = optionPane.getValue();
+    if (!(value instanceof String)) {
+      workflow.reset();
+      return;
+    }
+    String selected = (String) value;
+
+    if (_I("recorderImageSrcBrowse").equals(selected)) {
+      String imagePath = imagePicker.browseImage();
+      if (imagePath == null) { workflow.reset(); return; }
+      finishImageCapture(actionType, imagePath);
+      return;
+    }
+    if (_I("recorderImageSrcExisting").equals(selected)) {
+      String imagePath = imagePicker.pickFromLibrary();
+      if (imagePath == null) { workflow.reset(); return; }
+      finishImageCapture(actionType, imagePath);
+      return;
+    }
+
+    assistant.hideForCapture();
+
+    // Defer the capture to the next EDT tick so the popup dispose + the recorder hide are
+    // actually repainted before userCapture() grabs the overlay backdrop — guarantees the
+    // source-select dialog is gone, no race, no arbitrary pause. #387
+    SwingUtilities.invokeLater(() -> new Thread(() -> {
+      ScreenImage capture = new Screen().userCapture("选择操作区域：" + actionLabel(actionType));
+
+      SwingUtilities.invokeLater(() -> {
+        assistant.showAfterCapture();
+
+        if (capture == null) {
+          workflow.reset();
+          return;
+        }
+
+        try {
+          String defaultName = actionType + "_" + System.currentTimeMillis();
+          String imageName = JOptionPane.showInputDialog(assistant,
+              _I("recorderImageNamePrompt"), defaultName);
+          if (imageName == null || imageName.trim().isEmpty()) imageName = defaultName;
+          imageName = imageName.trim().replaceAll("[^a-zA-Z0-9_\\-]", "_");
+          if (!imageName.endsWith(".png")) imageName += ".png";
+
+          String imagePath = capture.save(screenshotDir.getAbsolutePath(), imageName);
+          if (imagePath == null) {
+            workflow.reset();
+            RecorderNotifications.error("无法保存截图");
+            return;
+          }
+          capturedImages.add(imagePath);
+
+          finishImageCapture(actionType, imagePath);
+
+        } catch (Exception ex) {
+          workflow.reset();
+          RecorderNotifications.error("操作失败：" + ex.getMessage());
+        }
+      });
+    }).start());
+  }
+
+  private void finishImageCapture(String actionType, String imagePath) {
+    workflow.onCaptureComplete();
+    boolean scoped = appScope.isAppScoped();
+    String varName = appScope.getAppVarName();
+
+    try {
+      Pattern pattern = new Pattern(imagePath);
+
+      PatternValidator.ValidationResult result = null;
+      try {
+        java.awt.image.BufferedImage candidate =
+            javax.imageio.ImageIO.read(new File(imagePath));
+        if (candidate != null) {
+          result = PatternValidator.validate(
+              new Screen().capture().getImage(), candidate);
+        }
+      } catch (Exception | UnsatisfiedLinkError ignored) {
+      }
+
+      if (result != null) {
+        if (result.warning == PatternValidator.Warning.AMBIGUOUS) {
+          pattern = pattern.similar((float) result.suggestedSimilarity);
+          RecorderNotifications.warning(
+              "图像匹配到 " + result.matchCount + " 个位置，已提高匹配相似度至 " + result.suggestedSimilarity);
+        } else if (result.warning == PatternValidator.Warning.COLOR_DEPENDENT) {
+          RecorderNotifications.warning("此图像依赖颜色，切换主题后可能无法匹配。");
+        } else if (result.warning == PatternValidator.Warning.TOO_SMALL) {
+          RecorderNotifications.warning("图像过小，建议截取更大的区域。");
+        } else if (result.matchCount > 0) {
+          RecorderNotifications.success("图像验证通过（得分：" + String.format("%.2f", result.bestScore) + ")");
+        }
+      }
+
+      String code = codeGen.generateImageCode(actionType, pattern);
+      codeGen.addMultilineActionCode(code, scoped, varName);
+
+      if ("click".equals(actionType) || "doubleClick".equals(actionType) || "rightClick".equals(actionType)) {
+        codeGen.generateVanish(assistant, pattern, scoped, varName);
+      }
+
+      workflow.onActionComplete();
+
+    } catch (Exception ex) {
+      workflow.reset();
+      RecorderNotifications.error("操作失败：" + ex.getMessage());
+    }
+  }
+
+  void handleDragDrop() {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startDragDrop()) return;
+
+    pickImageAsync("拖动起点", sourcePath -> {
+      if (sourcePath == null) { workflow.reset(); return; }
+      workflow.advanceDragDrop();
+
+      pickImageAsync("放置终点", destPath -> {
+        if (destPath == null) { workflow.reset(); return; }
+        try {
+          Pattern sourcePattern = new Pattern(sourcePath);
+          Pattern destPattern = new Pattern(destPath);
+          String code = codeGen.getGenerator().dragDrop(sourcePattern, destPattern);
+          codeGen.addActionCode(code, appScope.isAppScoped(), appScope.getAppVarName());
+          workflow.onActionComplete();
+          RecorderNotifications.success("拖放操作已记录");
+        } catch (Exception ex) {
+          workflow.reset();
+          RecorderNotifications.error("拖放操作失败：" + ex.getMessage());
+        }
+      });
+    });
+  }
+
+  /**
+   * Mirror handleImageCapture's source-selection flow but expose the result
+   * via a callback so callers (notably handleDragDrop's two-step source/dest
+   * pickers) can chain them without blocking the EDT.
+   *
+   * <p>Capture path: assistant.hideForCapture(), userCapture on a worker
+   * thread, naming + save back on the EDT, callback with the saved path.
+   * Browse / library paths stay synchronous (no userCapture, no focus
+   * issue) and just invoke the callback inline.
+   *
+   * <p>Replaces the previous synchronous imagePicker.pickImage() chain
+   * which blocked the EDT during userCapture and prevented the Windows
+   * capture overlay from receiving drag events.
+   */
+  private void pickImageAsync(String purpose, java.util.function.Consumer<String> callback) {
+    java.util.List<String> options = new java.util.ArrayList<>();
+    options.add(_I("recorderImageSrcCapture"));
+    options.add(_I("recorderImageSrcBrowse"));
+    if (!capturedImages.isEmpty()) {
+      options.add(_I("recorderImageSrcExisting"));
+    }
+    // Own the source-select dialog instead of JOptionPane.showOptionDialog: the helper
+    // leaves an internal window we cannot reference, so it lingers and ghosts into the
+    // capture overlay (#387). Holding the JDialog lets us dispose() it for real.
+    JOptionPane optionPane = new JOptionPane(
+        _I("recorderImageSrcDlgTitle", purpose),
+        JOptionPane.QUESTION_MESSAGE, JOptionPane.DEFAULT_OPTION,
+        null, options.toArray(), options.get(0));
+    javax.swing.JDialog sourceDialog = optionPane.createDialog(assistant, purpose);
+    sourceDialog.setVisible(true); // modal: blocks until the user picks
+    sourceDialog.dispose();        // tear the popup window down NOW
+    Object value = optionPane.getValue();
+    if (!(value instanceof String)) { callback.accept(null); return; }
+    String selected = (String) value;
+
+    if (_I("recorderImageSrcBrowse").equals(selected)) {
+      callback.accept(imagePicker.browseImage());
+      return;
+    }
+    if (_I("recorderImageSrcExisting").equals(selected)) {
+      callback.accept(imagePicker.pickFromLibrary());
+      return;
+    }
+
+    assistant.hideForCapture();
+    // Defer the capture to the next EDT tick so the popup dispose + the recorder hide are
+    // actually repainted before userCapture() grabs the overlay backdrop — guarantees the
+    // source-select dialog is gone, no race, no arbitrary pause. #387
+    SwingUtilities.invokeLater(() -> new Thread(() -> {
+      ScreenImage capture = new Screen().userCapture("选择操作区域：" + purpose);
+      SwingUtilities.invokeLater(() -> {
+        assistant.showAfterCapture();
+        if (capture == null) { callback.accept(null); return; }
+        try {
+          String defaultName = purpose.replaceAll("\\s+", "_").toLowerCase()
+              + "_" + System.currentTimeMillis();
+          String imageName = JOptionPane.showInputDialog(assistant,
+              _I("recorderImageNamePrompt"), defaultName);
+          if (imageName == null || imageName.trim().isEmpty()) imageName = defaultName;
+          imageName = imageName.trim().replaceAll("[^a-zA-Z0-9_\\-]", "_");
+          if (!imageName.endsWith(".png")) imageName += ".png";
+          String imagePath = capture.save(screenshotDir.getAbsolutePath(), imageName);
+          if (imagePath == null) {
+            callback.accept(null);
+            RecorderNotifications.error("无法保存截图");
+            return;
+          }
+          capturedImages.add(imagePath);
+          callback.accept(imagePath);
+        } catch (Exception ex) {
+          callback.accept(null);
+          RecorderNotifications.error("操作失败：" + ex.getMessage());
+        }
+      });
+    }, "RecorderDragDrop-" + purpose).start());
+  }
+
+  void handleSwipe() {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startCapture("swipe")) return;
+
+    assistant.hideForCapture();
+
+    new Thread(() -> {
+      ScreenImage capture = new Screen().userCapture("选择滑动区域");
+
+      SwingUtilities.invokeLater(() -> {
+        assistant.showAfterCapture();
+
+        if (capture == null) {
+          workflow.reset();
+          return;
+        }
+
+        try {
+          String defaultName = "swipe_zone_" + System.currentTimeMillis();
+          String imageName = JOptionPane.showInputDialog(assistant,
+              "为区域命名：", defaultName);
+          if (imageName == null || imageName.trim().isEmpty()) imageName = defaultName;
+          imageName = imageName.trim().replaceAll("[^a-zA-Z0-9_\\-]", "_");
+          if (!imageName.endsWith(".png")) imageName += ".png";
+
+          String imagePath = capture.save(screenshotDir.getAbsolutePath(), imageName);
+          capturedImages.add(imagePath);
+
+          RecorderSwipeDialog dialog = new RecorderSwipeDialog(
+              assistant, capture.getImage(), imagePath);
+          dialog.setVisible(true);
+          String[] lines = dialog.getResultLines();
+
+          if (lines != null) {
+            boolean scoped = appScope.isAppScoped();
+            String varName = appScope.getAppVarName();
+            for (String line : lines) codeGen.addActionCode(line, scoped, varName);
+            RecorderNotifications.success("滑动操作已记录");
+          }
+          workflow.onActionComplete();
+        } catch (Exception ex) {
+          workflow.reset();
+          RecorderNotifications.error("滑动操作失败：" + ex.getMessage());
+        }
+      });
+    }, "RecorderSwipe").start();
+  }
+
+  void handleWheelCapture() {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startCapture("wheel")) return;
+
+    assistant.hideForCapture();
+
+    new Thread(() -> {
+      ScreenImage capture = new Screen().userCapture("选择滚轮操作区域");
+
+      SwingUtilities.invokeLater(() -> {
+        assistant.showAfterCapture();
+
+        if (capture == null) {
+          workflow.reset();
+          return;
+        }
+
+        try {
+          String imagePath = capture.save(screenshotDir.getAbsolutePath());
+          capturedImages.add(imagePath);
+
+          RecorderWheelDialog dialog = new RecorderWheelDialog(
+              assistant, capture.getImage(), imagePath);
+          dialog.setVisible(true);
+          String code = dialog.getResult();
+
+          if (code != null) {
+            codeGen.addActionCode(code, appScope.isAppScoped(), appScope.getAppVarName());
+          }
+          workflow.onActionComplete();
+        } catch (Exception ex) {
+          workflow.reset();
+          RecorderNotifications.error("滚轮操作失败：" + ex.getMessage());
+        }
+      });
+    }, "RecorderWheel").start();
+  }
+
+  void handleTextAction(String actionType) {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startTextInput()) return;
+
+    String label;
+    switch (actionType) {
+      case "textClick":  label = _I("recorderTextClickPrompt"); break;
+      case "textWait":   label = _I("recorderTextWaitPrompt"); break;
+      case "textExists": label = _I("recorderTextExistsPrompt"); break;
+      default:           label = "Text:"; break;
+    }
+
+    String text = JOptionPane.showInputDialog(assistant, label, _I("recorderActionsTextActionTitle"),
+        JOptionPane.PLAIN_MESSAGE);
+    if (text != null && !text.trim().isEmpty()) {
+      codeGen.addActionCode(codeGen.generateTextCode(actionType, text.trim()),
+          appScope.isAppScoped(), appScope.getAppVarName());
+    }
+    workflow.onActionComplete();
+  }
+
+  void handleTypeText() {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startTextInput()) return;
+
+    String text = JOptionPane.showInputDialog(assistant, _I("recorderTypePrompt"), _I("recorderActionsTypeTextTitle"),
+        JOptionPane.PLAIN_MESSAGE);
+    if (text != null && !text.isEmpty()) {
+      String code = codeGen.getGenerator().typeText(text, new String[0]);
+      codeGen.addActionCode(code, appScope.isAppScoped(), appScope.getAppVarName());
+    }
+    workflow.onActionComplete();
+  }
+
+  void handleKeyCombo() {
+    if (appScope.warnIfNoApp(assistant)) return;
+    if (!workflow.startKeyComboCApture()) return;
+
+    RecorderKeyComboDialog dialog = new RecorderKeyComboDialog(assistant);
+    dialog.setVisible(true);
+    String combo = dialog.getResult();
+    if (combo != null && !combo.isEmpty()) {
+      codeGen.addActionCode(combo, appScope.isAppScoped(), appScope.getAppVarName());
+    }
+    workflow.onActionComplete();
+  }
+
+  void handlePause() {
+    if (!workflow.startPauseInput()) return;
+
+    String seconds = JOptionPane.showInputDialog(assistant, _I("recorderPausePrompt"),
+        _I("recorderActionsPauseTitle"), JOptionPane.PLAIN_MESSAGE);
+    if (seconds != null && !seconds.isEmpty()) {
+      try {
+        int s = Integer.parseInt(seconds.trim());
+        codePreview.addLine("sleep(" + s + ")");
+        RecorderNotifications.warning("固定延时可能不稳定，建议优先使用“等待图像”。");
+      } catch (NumberFormatException ex) {
+        RecorderNotifications.error("数字无效：" + seconds);
+      }
+    }
+    workflow.onActionComplete();
+  }
+  private String actionLabel(String action) {
+    if ("click".equals(action)) return "单击";
+    if ("doubleClick".equals(action)) return "双击";
+    if ("rightClick".equals(action)) return "右键单击";
+    if ("wait".equals(action)) return "等待图像";
+    return action;
+  }
+
+}

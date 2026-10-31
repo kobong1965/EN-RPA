@@ -1,0 +1,11 @@
+{
+  "stores": [
+    {
+      "storeId": "douyin_sikepai",
+      "storeName": "示例抖店",
+      "displayName": "示例抖店（抖店）",
+      "sourceUrl": "https://fxg.jinritemai.com/ffa/mshop/homepage/index?channel=zhaoshang",
+      "confirmed": false
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "stores": [
+    {
+      "storeId": "neutcut",
+      "targetAccount": "请填写完整千牛账号",
+      "storeName": "示例店铺A",
+      "pageStoreName": "示例店铺A",
+      "nameAliases": [],
+      "confirmed": false
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+target*/
+.idea
+.junie
+.claude/
+nb*
+*.iml
+stuff/
+*.versionsBackup
+*.log
+*.o
+*.o.d
+*.a
+*.def
+opencvsrc/
+.settings/
+.project
+.classpath
+*$py.class
+*.pyc
+.exe
+original/
+*.sikuli.robot/
+*.java.ignore
+.DS_Store
+native/
+*.class 
+Test*.java
+# Reporter module uses Test/TestRun as legitimate domain model classes — whitelist them
+!Reporter/src/main/java/**/Test*.java
+*.txt
+
+
+
+# IDE runtime resources are product files — never ignorable (the blanket
+# *.txt above exists for scratch notes, not for shipped ascii art)
+!IDE/src/main/resources/*.txt
+.local-build/
+!构建说明-执手.txt
+
+# Local accounts, browser evidence, runtime and business data
+oculix-flow/daily/stores.json
+oculix-flow/douyin/stores.json
+oculix-flow/千牛启动.properties
+oculix-flow/**/runs/
+oculix-flow/workflow-runs/
+oculix-flow/**/__pycache__/
+oculix-flow/ocr/.venv/
+oculix-flow/ocr/.uv-cache/
+执行数据/
+runtime/
+*.lnk

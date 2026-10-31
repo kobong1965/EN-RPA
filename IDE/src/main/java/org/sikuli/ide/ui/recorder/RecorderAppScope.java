@@ -1,0 +1,285 @@
+/*
+ * Copyright (c) 2010-2026, sikuli.org, sikulix.com, oculix-org - MIT license
+ */
+package org.sikuli.ide.ui.recorder;
+
+import net.miginfocom.swing.MigLayout;
+import org.sikuli.script.App;
+import org.sikuli.support.AppLauncher;
+import org.sikuli.support.RemotePreflightCheck;
+
+import javax.swing.*;
+import java.util.List;
+
+import static org.sikuli.support.ide.SikuliIDEI18N._I;
+/**
+ * @author Julien Mer (julienmerconsulting)
+ * @author Claude (Anthropic)
+ * @since 3.0.3
+ */
+
+class RecorderAppScope {
+
+  private App currentApp = null;
+  private String appVarName = null;
+  private boolean firstActionDone = false;
+  private boolean remoteMode = false;
+
+  private final JButton btnLaunchApp;
+  private final JButton btnCloseApp;
+  private final JCheckBox chkScopeToApp;
+  private final RecorderCodeGen codeGen;
+
+  RecorderAppScope(JButton btnLaunchApp, JButton btnCloseApp, JCheckBox chkScopeToApp, RecorderCodeGen codeGen) {
+    this.btnLaunchApp = btnLaunchApp;
+    this.btnCloseApp = btnCloseApp;
+    this.chkScopeToApp = chkScopeToApp;
+    this.codeGen = codeGen;
+  }
+
+  boolean isAppScoped() {
+    return currentApp != null && chkScopeToApp.isSelected();
+  }
+
+  String getAppVarName() {
+    return appVarName;
+  }
+
+  App getCurrentApp() {
+    return currentApp;
+  }
+
+  boolean warnIfNoApp(JDialog parent) {
+    if (!firstActionDone && currentApp == null) {
+      int answer = JOptionPane.showConfirmDialog(parent,
+          _I("recorderAppScopeLaunchFirstBody"),
+          _I("recorderAppScopeLaunchFirstTitle"),
+          JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+      if (answer == JOptionPane.YES_OPTION) {
+        handleLaunchApp(parent);
+        return currentApp == null;
+      }
+    }
+    firstActionDone = true;
+    return false;
+  }
+
+  void handleLaunchApp(JDialog parent) {
+    String[] modes = {"本地应用", "远程应用（通过 SSH 连接 VNC）"};
+    int mode = JOptionPane.showOptionDialog(parent,
+        "选择启动方式：",
+        _I("recorderAppScopeRemoteDlgTitle"),
+        JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE,
+        null, modes, modes[0]);
+
+    if (mode < 0) return;
+
+    if (mode == 0) {
+      launchLocal(parent);
+    } else {
+      launchRemoteVNC(parent);
+    }
+  }
+
+  private void launchLocal(JDialog parent) {
+    String appPath = JOptionPane.showInputDialog(parent,
+        "应用路径或命令：", "启动本地应用", JOptionPane.PLAIN_MESSAGE);
+    if (appPath == null || appPath.trim().isEmpty()) return;
+    appPath = appPath.trim();
+
+    try {
+      currentApp = App.open(appPath);
+      if (currentApp == null) {
+        RecorderNotifications.error("无法启动：" + appPath);
+        return;
+      }
+
+      remoteMode = false;
+      onAppLaunched(appPath);
+      codeGen.generateLaunchApp(appPath, appVarName, chkScopeToApp.isSelected());
+      RecorderNotifications.success("已启动：" + appPath);
+    } catch (Exception ex) {
+      RecorderNotifications.error("启动失败：" + ex.getMessage());
+    }
+  }
+
+  private void launchRemoteVNC(JDialog parent) {
+    JPanel panel = new JPanel(new MigLayout("wrap 2, insets 8", "[right][grow, fill]"));
+    JTextField tfHost = new JTextField(20);
+    JTextField tfUser = new JTextField(20);
+    JPasswordField tfPass = new JPasswordField(20);
+    JTextField tfPort = new JTextField("5900", 8);
+
+    panel.add(new JLabel(_I("recorderAppScopePromptHost")));
+    panel.add(tfHost);
+    panel.add(new JLabel(_I("recorderAppScopePromptUser")));
+    panel.add(tfUser);
+    panel.add(new JLabel(_I("recorderAppScopePromptPassword")));
+    panel.add(tfPass);
+    panel.add(new JLabel(_I("recorderAppScopePromptVncPort")));
+    panel.add(tfPort);
+
+    int result = JOptionPane.showConfirmDialog(parent, panel,
+        "远程 VNC 连接", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+    if (result != JOptionPane.OK_OPTION) return;
+
+    String host = tfHost.getText().trim();
+    String user = tfUser.getText().trim();
+    String password = new String(tfPass.getPassword());
+    String port = tfPort.getText().trim();
+
+    if (host.isEmpty() || user.isEmpty()) {
+      RecorderNotifications.error("请填写主机和用户名。");
+      return;
+    }
+
+    System.err.println("[VNC-DEBUG] Host=" + host + " User=" + user + " Port=" + port);
+    System.err.println("[VNC-DEBUG] Creating wait dialog...");
+
+    JDialog waitDialog = new JDialog(parent, _I("recorderAppScopePreflightTitle"), false);
+    waitDialog.setSize(280, 80);
+    waitDialog.setLocationRelativeTo(parent);
+    waitDialog.setLayout(new java.awt.BorderLayout());
+    JLabel waitLabel = new JLabel("  \u23F3 " + _I("recorderAppScopeStartingWsl"), SwingConstants.CENTER);
+    waitLabel.setForeground(javax.swing.UIManager.getColor("Label.foreground"));
+    waitLabel.setFont(javax.swing.UIManager.getFont("defaultFont"));
+    waitDialog.add(waitLabel, java.awt.BorderLayout.CENTER);
+    waitDialog.setVisible(true);
+    System.err.println("[VNC-DEBUG] Wait dialog visible, starting SwingWorker...");
+
+    final String fHost = host;
+    final String fUser = user;
+    final String fPassword = password;
+    final String fPort = port;
+
+    new javax.swing.SwingWorker<List<RemotePreflightCheck.CheckResult>, String>() {
+      @Override
+      protected List<RemotePreflightCheck.CheckResult> doInBackground() {
+        java.util.List<RemotePreflightCheck.CheckResult> results = new java.util.ArrayList<>();
+        System.err.println("[VNC-DEBUG] Worker started - checking sshpass...");
+        publish("正在启动 WSL 环境…");
+        results.add(RemotePreflightCheck.checkSshpass());
+        System.err.println("[VNC-DEBUG] sshpass: " + results.get(results.size()-1).message);
+        publish("正在检查 X Server…");
+        results.add(RemotePreflightCheck.checkXServer());
+        System.err.println("[VNC-DEBUG] xserver: " + results.get(results.size()-1).message);
+        publish("正在检查 VNC 查看器…");
+        results.add(RemotePreflightCheck.checkVncViewer());
+        System.err.println("[VNC-DEBUG] vncviewer: " + results.get(results.size()-1).message);
+        publish("正在检查 SSH 指纹：" + fHost + "...");
+        results.add(RemotePreflightCheck.checkFingerprint(fHost));
+        System.err.println("[VNC-DEBUG] fingerprint: " + results.get(results.size()-1).message);
+        publish("运行前检查已完成。");
+        System.err.println("[VNC-DEBUG] All checks done.");
+        return results;
+      }
+
+      @Override
+      protected void process(java.util.List<String> chunks) {
+        if (!chunks.isEmpty()) waitLabel.setText("  \u23F3 " + chunks.get(chunks.size() - 1));
+      }
+
+      @Override
+      protected void done() {
+        waitDialog.dispose();
+        try {
+          List<RemotePreflightCheck.CheckResult> checks = get(60, java.util.concurrent.TimeUnit.SECONDS);
+
+          boolean allPassed = RemotePreflightCheck.allPassed(checks);
+          if (!allPassed) {
+            StringBuilder msg = new StringBuilder("运行前检查：\n\n");
+            for (RemotePreflightCheck.CheckResult check : checks) {
+              msg.append(check.passed ? "  \u2713  " : "  \u2717  ");
+              msg.append(check.name).append(": ").append(check.message).append("\n");
+            }
+            msg.append("\n修复后重试，还是继续运行？");
+
+            String[] options = {"全部修复", "继续运行", "取消"};
+            int choice = JOptionPane.showOptionDialog(parent, msg.toString(),
+                "检查结果",
+                JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
+                null, options, options[0]);
+
+            if (choice == 0) {
+              for (RemotePreflightCheck.CheckResult check : checks) {
+                if (!check.passed && check.autoFix != null) {
+                  check.autoFix.run();
+                }
+              }
+              RecorderNotifications.success("已自动修复，请重新启动。");
+              return;
+            }
+            if (choice == 2 || choice < 0) return;
+          }
+
+          waitLabel.setText("  \u23F3 " + _I("recorderAppScopeLaunchingVnc"));
+          waitDialog.setVisible(true);
+
+          AppLauncher.launchRemoteVNC(fHost, fUser, fPassword, fPort);
+
+          waitDialog.dispose();
+          remoteMode = true;
+          currentApp = new App("vncviewer");
+          appVarName = "vncSession";
+
+          btnLaunchApp.setEnabled(false);
+          btnCloseApp.setEnabled(true);
+          chkScopeToApp.setEnabled(true);
+
+          codeGen.addLine("# VNC Remote connection to " + fHost);
+          codeGen.addLine("vncSession = VNCScreen.start(\"" + fHost + "\", " + fPort
+              + ", \"<SSH_PASSWORD>\", 1920, 1080)");
+          RecorderNotifications.success("VNC 已连接至 " + fHost);
+
+        } catch (java.util.concurrent.TimeoutException ex) {
+          waitDialog.dispose();
+          RecorderNotifications.error("运行前检查超过 60 秒，请检查是否已安装 WSL。");
+        } catch (Exception ex) {
+          waitDialog.dispose();
+          RecorderNotifications.error("远程启动失败：" + ex.getMessage());
+          ex.printStackTrace();
+        }
+      }
+    }.execute();
+  }
+
+  private void onAppLaunched(String appPath) {
+    btnLaunchApp.setEnabled(false);
+    btnCloseApp.setEnabled(true);
+    chkScopeToApp.setEnabled(true);
+
+    appVarName = appPath.replaceAll(".*[/\\\\]", "")
+        .replaceAll("\\.[^.]+$", "")
+        .replaceAll("[^a-zA-Z0-9]", "")
+        .toLowerCase();
+    if (appVarName.isEmpty()) appVarName = "app";
+  }
+
+  void handleCloseApp() {
+    if (currentApp != null) {
+      try {
+        currentApp.close();
+        codeGen.generateCloseApp(appVarName);
+        RecorderNotifications.success("应用已关闭");
+      } catch (Exception ex) {
+        RecorderNotifications.error("关闭失败：" + ex.getMessage());
+      }
+    }
+    currentApp = null;
+    appVarName = null;
+    remoteMode = false;
+    btnLaunchApp.setEnabled(true);
+    btnCloseApp.setEnabled(false);
+    chkScopeToApp.setEnabled(false);
+  }
+
+  void focusAppIfScoped() {
+    if (currentApp != null && chkScopeToApp.isSelected()) {
+      try {
+        currentApp.focus();
+      } catch (Exception ignored) {
+      }
+    }
+  }
+}

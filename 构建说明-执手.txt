@@ -1,0 +1,53 @@
+执手执行器：本地可重复构建说明
+
+源码来源
+  官方仓库：https://github.com/oculix-org/Oculix
+  标签：v4.0.0
+  原始提交：02ea8844483a83a2963db8016cd7ad421e15bc91
+  本目录保留完整上游源码及修改。原有 OculiX 文件夹中的官方程序未被覆盖。
+
+构建方式
+  在 PowerShell 中执行本目录的 build-zhishou.ps1。
+  脚本使用相邻 runtime/java/jdk-21.0.12.1+1 中的 javac --release 17，
+  编译 API/src/main/java 与 IDE/src/main/java 下全部 Java 源文件，
+  并将编译结果、资源文件写入官方 Windows 依赖包的副本。
+  输出：../执手执行器/zhishou-executor.jar
+
+API 与 IDE 的本地源码均重新编译，界面和行为修改编入实际运行的 Java 类。
+运行依赖与原生库复用已验证的官方 Windows 完整包，避免重新解析依赖后改变原包组合。
+第三方依赖沿用官方完整包，不在此脚本中重新从 Maven 仓库装配。
+原始官方 JAR 的 SHA256 和最终产物 SHA256 写在输出目录的“构建信息.json”中。
+
+编译依赖
+  ../OculiX/oculixide-4.0.0-windows.jar
+    官方发布：https://github.com/oculix-org/Oculix/releases/tag/v4.0.0
+    SHA256：7eda19dff0e14ce462b535b788a7b48afda2ca163f33307579541706dab6cd0e
+  ../runtime/downloads/jruby-complete-9.4.14.0.jar
+    Maven Central 官方坐标：org.jruby:jruby-complete:9.4.14.0
+    作为可选 Ruby 支持类的编译依赖；官方 Windows 分发原本不捆绑此依赖，
+    本构建同样不将它加入运行包，不削减原有 Windows 发行包提供的能力。
+    SHA512：5d76502d2587307eac9948a3fcc1fec4ccc17f3f11c9283851afa4c631d997ecbde0940c94db57f13e85fa0331bba786841b8d2c51e74f97189d644661ea79f3
+
+全新电脑重新构建需要准备上述两份依赖和 JDK，目录结构保持一致。
+每次构建创建独立 .local-build/build-时间/ 目录，不删除或重置源代码。
+如果 Windows 提示无法替换正在使用的产物，请先关闭“执手执行器”再构建。
+
+标准 Maven 构建（可选）
+  相邻 runtime/apache-maven-3.9.9 是已校验的 Apache Maven，不需要更改系统 PATH。
+  直接源码编译脚本不依赖 Maven。
+  使用 Maven 时设置当前进程 JAVA_HOME 指向上述 JDK，命令示例：
+    mvn -pl API,IDE -am package -Pcomplete-win-jar -Dmaven.test.skip=true
+  上述命令跳过测试，只完成打包。功能与界面验证需另外进行。
+  2026-10-28 本机已验证标准 Maven API+IDE 构建通过，耗时约 2 分 4 秒。
+  产物：IDE/target/oculixide-4.0.0-complete-win.jar；日志 ../runtime/maven-baseline.log。
+
+打开程序
+  构建会生成“启动执手.lnk”和“启动执手.ps1”。双击快捷方式即可打开。
+  启动时指定工作区路径，保留原官方 OculiX 程序和其快捷方式。
+  启动器指定 -Doculix.preferencesNode=org/zhishou/executor，将日常偏好设置保存到
+  独立的 Java Preferences 节点。Windows 使用独立注册表子节点，不依赖 userRoot 目录属性。
+  未指定此属性时保留上游默认节点，方便原有 API 用户保持兼容。
+  PowerShell 启动脚本会把启动日志保存到程序目录。
+
+许可证
+  保留上游 MIT LICENSE 及第三方组件自己的许可证；修改版不是上游官方发行版。
